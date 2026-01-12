@@ -1,3 +1,11 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Dec 30 09:42:19 2025
+
+@author: mitoa
+"""
+# Edited to use f-string and solve the hang issue (the window does not end properly when run on Spyder6.)
+
 import os
 from pathlib import Path
 import numpy as np
@@ -6,92 +14,79 @@ import cv2 as cv
 MIN_NUM_KEYPOINT_MATCHES = 50
 
 def main():
-    """Loop through 2 folders with paired images, register and blink images."""
-    night1_files = sorted(os.listdir('night_1'))
-    night2_files = sorted(os.listdir('night_2'))             
     path1 = Path.cwd() / 'night_1'
     path2 = Path.cwd() / 'night_2'
     path3 = Path.cwd() / 'night_1_registered'
+    path3.mkdir(parents=True, exist_ok=True)
 
-    for i, _ in enumerate(night1_files):    
+    night1_files = sorted([f for f in os.listdir(path1) if f.lower().endswith('.png')])
+    night2_files = sorted([f for f in os.listdir(path2) if f.lower().endswith('.png')])             
+
+    for i in range(len(night1_files)):    
         img1 = cv.imread(str(path1 / night1_files[i]), cv.IMREAD_GRAYSCALE)
         img2 = cv.imread(str(path2 / night2_files[i]), cv.IMREAD_GRAYSCALE)
 
-        print("Comparing {} to {}.\n".format(night1_files[i], night2_files[i]))
+        if img1 is None or img2 is None:
+            continue
 
-        # Find keypoints and best matches between them.
+        print(f"Displaying and Processing: {night1_files[i]}")
+
+        # 1. Find matches
         kp1, kp2, best_matches = find_best_matches(img1, img2)
-        img_match = cv.drawMatches(img1, kp1, img2, kp2,
-                                   best_matches, outImg=None)
         
-        # Draw a line between the two images.
-        height, width = img1.shape
-        cv.line(img_match, (width, 0), (width, height), (255, 255, 255), 1)
-        QC_best_matches(img_match)  # Comment-out to ignore.
+        # 2. Show the matching lines on screen
+        img_match = cv.drawMatches(img1, kp1, img2, kp2, best_matches, outImg=None)
+        # --- DRAW THE VERTICAL SEPARATOR LINE ---
+        height, width = img1.shape[:2]
+        # Using Bright Green (0, 255, 0) and thickness of 3 so it's impossible to miss
+        cv.line(img_match, (width, 0), (width, height), (0, 255, 0), 3)
+        
+        cv.imshow('Keypoint Matches', img_match)
+        cv.waitKey(2000)  # Shows the match lines for 2 seconds
 
-        # Register left-hand image using keypoints.        
+        # 3. Register the image
         img1_registered = register_image(img1, img2, kp1, kp2, best_matches)
 
-        # QC registration and save registered image (Optional steps):
-        blink(img1, img1_registered, 'Check Registration', num_loops=5)  
-        out_filename = '{}_registered.png'.format(night1_files[i][:-4])
-        cv.imwrite(str(path3 / out_filename), img1_registered) # Will overwrite!
+        # 4. Save (Overwrites existing)
+        out_filename = f"{Path(night1_files[i]).stem}_registered.png"
+        cv.imwrite(str(path3 / out_filename), img1_registered)
 
+        # 5. Show the "Blink" on screen to check alignment
+        # This will toggle between img1_registered and img2
+        blink(img1_registered, img2, 'Registration Check (Blink)', num_loops=10)
+        
+        # Cleanup for Spyder stability
         cv.destroyAllWindows()
-
-        # Run the blink comparator
-        blink(img1_registered, img2, 'Blink Comparator', num_loops=15)
+        cv.waitKey(1) 
+    
+    print("Processing complete. All windows closed.")
 
 def find_best_matches(img1, img2):
-    """Return list of keypoints and list of best matches for two images."""
-    orb = cv.ORB_create(nfeatures=100)  #  Initiate ORB object.
-
-    # Find the keypoints and descriptors with ORB.
-    kp1, desc1 = orb.detectAndCompute(img1, mask=None)
-    kp2, desc2 = orb.detectAndCompute(img2, mask=None)
-    
-    # Find keypoint matches using Brute Force Matcher.
+    orb = cv.ORB_create(nfeatures=1000) 
+    kp1, desc1 = orb.detectAndCompute(img1, None)
+    kp2, desc2 = orb.detectAndCompute(img2, None)
+    if desc1 is None or desc2 is None:
+        return kp1, kp2, []
     bf = cv.BFMatcher(cv.NORM_HAMMING, crossCheck=True)
-    matches = bf.match(desc1, desc2)
+    matches = sorted(bf.match(desc1, desc2), key=lambda x: x.distance)
+    return kp1, kp2, matches[:MIN_NUM_KEYPOINT_MATCHES]
 
-    # Sort matches in ascending order of distance and keep best n matches.
-    matches = sorted(matches, key=lambda x: x.distance)
-    best_matches = matches[:MIN_NUM_KEYPOINT_MATCHES]
-              
-    return kp1, kp2, best_matches
-
-def QC_best_matches(img_match):
-    """Draw best keypoint matches connected by colored lines."""    
-    cv.imshow('Best {} Matches'.format(MIN_NUM_KEYPOINT_MATCHES), img_match)
-    cv.waitKey(2500)  # Keeps window active 2.5 seconds.
-        
 def register_image(img1, img2, kp1, kp2, best_matches):
-    """Return first image registered to second image."""
-    if len(best_matches) >= MIN_NUM_KEYPOINT_MATCHES:
-        src_pts = np.zeros((len(best_matches), 2), dtype=np.float32)
-        dst_pts = np.zeros((len(best_matches), 2), dtype=np.float32)
-        for i, match in enumerate(best_matches):
-            src_pts[i, :] = kp1[match.queryIdx].pt
-            dst_pts[i, :] = kp2[match.trainIdx].pt
-            
-        h_array, mask = cv.findHomography(src_pts, dst_pts, cv.RANSAC)
-        height, width = img2.shape  # Get dimensions of image 2.
-        img1_warped = cv.warpPerspective(img1, h_array, (width, height))
-
-        return img1_warped
-
-    else:
-        print("WARNING: Number of keypoint matches < {}\n".format
-              (MIN_NUM_KEYPOINT_MATCHES))
-        return img1
+    if len(best_matches) >= 10:
+        src_pts = np.float32([kp1[m.queryIdx].pt for m in best_matches]).reshape(-1, 1, 2)
+        dst_pts = np.float32([kp2[m.trainIdx].pt for m in best_matches]).reshape(-1, 1, 2)
+        h_matrix, _ = cv.findHomography(src_pts, dst_pts, cv.RANSAC, 5.0)
+        return cv.warpPerspective(img1, h_matrix, (img2.shape[1], img2.shape[0]))
+    return img1
 
 def blink(image_1, image_2, window_name, num_loops):
-    """Replicate blink comparator with two images."""
+    """Toggles two images in the same window."""
     for _ in range(num_loops):
         cv.imshow(window_name, image_1)
-        cv.waitKey(330)
+        if cv.waitKey(400) & 0xFF == ord('q'): break # Press 'q' to skip to next image
         cv.imshow(window_name, image_2)
-        cv.waitKey(330)
-        
+        if cv.waitKey(400) & 0xFF == ord('q'): break
+    cv.destroyWindow(window_name)
+
 if __name__ == '__main__':
     main()
