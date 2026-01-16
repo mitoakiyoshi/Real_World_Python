@@ -1,66 +1,92 @@
-import os
-from pathlib import Path
+# -*- coding: utf-8 -*-
+"""
+Created on Fri Jan 16 14:24:23 2026
+Update on transient_detector. 
+This version uses f-strings, zip, 
+and solved hang issues.
+Built on Spyder6
+January 16, 2026
+@author: Mito Akiyoshi
+"""
+
 import cv2 as cv
+from pathlib import Path
 
-PAD = 5  # Ignore pixels this distance from edge
+# Configuration
+PAD = 5 
+THRESHOLD_VAL = 30 
+NUM_TRANSIENTS = 2 
 
-def find_transient(image, diff_image, pad):
-    """Finds and draws circle around transients moving against a star field."""
-    transient = False
+def find_transient(image_to_label, diff_image, pad):
+    """Finds brightest spot, labels it, and erases it from the search image."""
     height, width = diff_image.shape
-    cv.rectangle(image, (PAD, PAD), (width - PAD, height - PAD), 255, 1)
-    minVal, maxVal, minLoc, maxLoc = cv.minMaxLoc(diff_image)
-    if pad < maxLoc[0] < width - pad and pad < maxLoc[1] < height - pad:
-        cv.circle(image, maxLoc, 10, 255, 0)
-        transient = True
-    return transient, maxLoc
+    _, maxVal, _, maxLoc = cv.minMaxLoc(diff_image)
+    
+    if (pad < maxLoc[0] < width - pad and 
+        pad < maxLoc[1] < height - pad and 
+        maxVal > THRESHOLD_VAL):
+        
+        # Draw the target circle on the display image (White outline)
+        cv.circle(image_to_label, maxLoc, 10, 255, 1)
+        # Eraser: Black out this area in the diff_image so we don't find it again
+        cv.circle(diff_image, maxLoc, 10, 0, -1)
+        return True
+    
+    return False
 
 def main():
-    night1_files = sorted(os.listdir('night_1_registered_transients'))
-    night2_files = sorted(os.listdir('night_2'))             
     path1 = Path.cwd() / 'night_1_registered_transients'
     path2 = Path.cwd() / 'night_2'
-    path3 = Path.cwd() / 'night_1_2_transients'
-    
-    # Images should all be the same size and similar exposures.    
-    for i, _ in enumerate(night1_files[:-1]):  # Leave off negative image   
-        img1 = cv.imread(str(path1 / night1_files[i]), cv.IMREAD_GRAYSCALE)
-        img2 = cv.imread(str(path2 / night2_files[i]), cv.IMREAD_GRAYSCALE)
+    out_path = Path.cwd() / 'night_1_2_transients'
+    out_path.mkdir(exist_ok=True)
 
-        # Get absolute difference between images.
+    # Use glob to get files and sort them to ensure they match
+    night1_files = sorted(path1.glob('*.png'))
+    night2_files = sorted(path2.glob('*.png'))
+
+    for p1, p2 in zip(night1_files, night2_files):
+        img1 = cv.imread(str(p1), cv.IMREAD_GRAYSCALE)
+        img2 = cv.imread(str(p2), cv.IMREAD_GRAYSCALE)
+        
+        if img1 is None or img2 is None:
+            continue
+
+        # 1. Show raw difference for 2 seconds
         diff_imgs1_2 = cv.absdiff(img1, img2)
         cv.imshow('Difference', diff_imgs1_2)
-        cv.waitKey(2000)        
+        cv.waitKey(2000) 
+        
+        # 2. Detection (Working on a copy of the difference)
+        working_diff = diff_imgs1_2.copy() 
+        detections_found = 0
+        for _ in range(NUM_TRANSIENTS):
+            if find_transient(img1, working_diff, PAD):
+                detections_found += 1
 
-        # Copy difference image and find and circle brightest pixel.
-        temp = diff_imgs1_2.copy()
-        transient1, transient_loc1 = find_transient(img1, temp, PAD)
-
-        # Draw black circle on temporary image to obliterate brightest spot.
-        cv.circle(temp, transient_loc1, 10, 0, -1)
-
-        # Get location of new brightest pixel and circle it on input image.        
-        transient2, _ = find_transient(img1, temp, PAD)
-
-        if transient1 or transient2:
-            print('\nTRANSIENT DETECTED between {} and {}\n'
-                  .format(night1_files[i], night2_files[i]))
+        # 3. Handle Detections
+        if detections_found > 0:
+            # Console Log using f-strings
+            print(f"\nTRANSIENT DETECTED between {p1.name} and {p2.name}\n")
+            
+            # Text labels on the image
             font = cv.FONT_HERSHEY_COMPLEX_SMALL
-            cv.putText(img1, night1_files[i], (10, 25),
-                       font, 1, (255, 255, 255), 1, cv.LINE_AA)
-            cv.putText(img1, night2_files[i], (10, 55),
-                       font, 1, (255, 255, 255), 1, cv.LINE_AA)
-
+            cv.putText(img1, p1.name, (10, 25), font, 1, (255, 255, 255), 1, cv.LINE_AA)
+            cv.putText(img1, p2.name, (10, 55), font, 1, (255, 255, 255), 1, cv.LINE_AA)
+            
+            # Create Blended Survey Image
             blended = cv.addWeighted(img1, 1, diff_imgs1_2, 1, 0)
+            
+            # Display result in the 'Surveyed' window
             cv.imshow('Surveyed', blended)
-            cv.waitKey(2500)
-
-            out_filename = '{}_DECTECTED.png'.format(night1_files[i][:-4])
-            cv.imwrite(str(path3 / out_filename), blended)  # Will overwrite!
-
+            cv.imwrite(str(out_path / f"{p1.stem}_DETECTED.png"), blended)
+            
+            # Pause to show results; press 'q' to quit early
+            if cv.waitKey(2500) & 0xFF == ord('q'):
+                break
         else:
-            print('\nNo transient detected between {} and {}\n'
-                  .format(night1_files[i], night2_files[i]))
+            print(f"\nNo transient detected between {p1.name} and {p2.name}\n")
+
+    cv.destroyAllWindows()
 
 if __name__ == '__main__':
     main()
